@@ -42,7 +42,6 @@ Import the framework in your project:
 
 `let openAI: OpenAISwift = OpenAISwift(config: OpenAISwift.Config.makeDefaultOpenAI(apiKey: "TOKEN"))`
 
-
 To follow [OpenAI requirements](https://platform.openai.com/docs/api-reference/authentication) 
 
 >  Remember that your API key is a secret! Do not share it with others or expose it in any client-side code (browsers, apps). Production requests must be routed through your own backend server where your API key can be securely loaded from an environment variable or key management service.
@@ -120,7 +119,7 @@ do {
         ChatMessage(role: .assistant, content: "The Los Angeles Dodgers won the World Series in 2020."),
         ChatMessage(role: .user, content: "Where was it played?")
     ]
-                
+
     let result = try await openAI.sendChat(with: chat)
     // use result
 } catch {
