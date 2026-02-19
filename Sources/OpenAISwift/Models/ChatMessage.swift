@@ -15,6 +15,10 @@ public enum ChatRole: String, Codable {
     case user
     /// The role for the artificial assistant who responds to the user.
     case assistant
+    /// Developer role for newer reasoning-capable models.
+    case developer
+    /// Tool role for function/tool outputs in chat completions.
+    case tool
 }
 
 /// A structure that represents a single message in a chat conversation.
@@ -25,6 +29,10 @@ public struct ChatMessage: Codable, Identifiable {
     public let role: ChatRole?
     /// The content of the message.
     public let content: String?
+    /// Tool calls emitted by assistant messages.
+    public let toolCalls: [ChatToolCall]?
+    /// Correlates tool output messages with a prior assistant tool call.
+    public let toolCallID: String?
 
     /// Creates a new chat message with a given role and content.
     /// - Parameters:
@@ -33,12 +41,23 @@ public struct ChatMessage: Codable, Identifiable {
     public init(role: ChatRole, content: String) {
         self.role = role
         self.content = content
+        self.toolCalls = nil
+        self.toolCallID = nil
     }
 
-    enum CodingKeys: CodingKey {
+    public init(role: ChatRole, content: String? = nil, toolCalls: [ChatToolCall]? = nil, toolCallID: String? = nil) {
+        self.role = role
+        self.content = content
+        self.toolCalls = toolCalls
+        self.toolCallID = toolCallID
+    }
+
+    enum CodingKeys: String, CodingKey {
         case id
         case role
         case content
+        case toolCalls = "tool_calls"
+        case toolCallID = "tool_call_id"
     }
 
     public init(from decoder: Decoder) throws {
@@ -47,6 +66,8 @@ public struct ChatMessage: Codable, Identifiable {
         self.id = UUID()
         self.role = try container.decodeIfPresent(ChatRole.self, forKey: ChatMessage.CodingKeys.role)
         self.content = try container.decodeIfPresent(String.self, forKey: ChatMessage.CodingKeys.content)
+        self.toolCalls = try container.decodeIfPresent([ChatToolCall].self, forKey: ChatMessage.CodingKeys.toolCalls)
+        self.toolCallID = try container.decodeIfPresent(String.self, forKey: ChatMessage.CodingKeys.toolCallID)
 
     }
 
@@ -55,6 +76,160 @@ public struct ChatMessage: Codable, Identifiable {
 
         try container.encodeIfPresent(self.role, forKey: ChatMessage.CodingKeys.role)
         try container.encodeIfPresent(self.content, forKey: ChatMessage.CodingKeys.content)
+        try container.encodeIfPresent(self.toolCalls, forKey: ChatMessage.CodingKeys.toolCalls)
+        try container.encodeIfPresent(self.toolCallID, forKey: ChatMessage.CodingKeys.toolCallID)
+    }
+}
+
+public struct ChatToolCall: Codable, Sendable {
+    public struct Function: Codable, Sendable {
+        public let name: String
+        public let arguments: String
+
+        public init(name: String, arguments: String) {
+            self.name = name
+            self.arguments = arguments
+        }
+    }
+
+    public let id: String
+    public let type: String
+    public let function: Function
+
+    public init(id: String, type: String = "function", function: Function) {
+        self.id = id
+        self.type = type
+        self.function = function
+    }
+}
+
+public struct ChatFunctionDefinition: Encodable, Sendable {
+    public let name: String
+    public let description: String?
+    public let parameters: [String: JSONValue]
+    public let strict: Bool?
+
+    public init(name: String, description: String? = nil, parameters: [String: JSONValue], strict: Bool? = nil) {
+        self.name = name
+        self.description = description
+        self.parameters = parameters
+        self.strict = strict
+    }
+}
+
+public struct ChatTool: Encodable, Sendable {
+    public let type: String
+    public let function: ChatFunctionDefinition
+
+    public init(function: ChatFunctionDefinition) {
+        self.type = "function"
+        self.function = function
+    }
+}
+
+public enum ChatToolChoice: Encodable, Sendable {
+    case none
+    case auto
+    case required
+    case function(name: String)
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case function
+        case name
+    }
+
+    private struct ToolFunctionName: Encodable {
+        let name: String
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        switch self {
+        case .none:
+            var c = encoder.singleValueContainer()
+            try c.encode("none")
+        case .auto:
+            var c = encoder.singleValueContainer()
+            try c.encode("auto")
+        case .required:
+            var c = encoder.singleValueContainer()
+            try c.encode("required")
+        case .function(let name):
+            var c = encoder.container(keyedBy: CodingKeys.self)
+            try c.encode("function", forKey: .type)
+            try c.encode(ToolFunctionName(name: name), forKey: .function)
+        }
+    }
+}
+
+public enum ChatReasoningEffort: String, Encodable, Sendable {
+    case none
+    case minimal
+    case low
+    case medium
+    case high
+}
+
+public enum ChatServiceTier: String, Encodable, Sendable {
+    case auto
+    case `default`
+    case flex
+    case priority
+}
+
+public struct ChatResponseFormat: Encodable, Sendable {
+    public let type: String
+    public let jsonSchema: JSONSchemaFormat?
+
+    public init(type: String, jsonSchema: JSONSchemaFormat? = nil) {
+        self.type = type
+        self.jsonSchema = jsonSchema
+    }
+
+    public static func text() -> ChatResponseFormat {
+        .init(type: "text")
+    }
+
+    public static func jsonObject() -> ChatResponseFormat {
+        .init(type: "json_object")
+    }
+
+    public static func jsonSchema(name: String, schema: [String: JSONValue], description: String? = nil, strict: Bool? = nil) -> ChatResponseFormat {
+        .init(
+            type: "json_schema",
+            jsonSchema: .init(name: name, schema: schema, description: description, strict: strict)
+        )
+    }
+
+    public struct JSONSchemaFormat: Encodable, Sendable {
+        public let name: String
+        public let schema: [String: JSONValue]
+        public let description: String?
+        public let strict: Bool?
+
+        public init(name: String, schema: [String: JSONValue], description: String? = nil, strict: Bool? = nil) {
+            self.name = name
+            self.schema = schema
+            self.description = description
+            self.strict = strict
+        }
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case type
+        case jsonSchema = "json_schema"
+    }
+}
+
+public struct ChatStreamOptions: Encodable, Sendable {
+    public let includeUsage: Bool?
+
+    public init(includeUsage: Bool? = nil) {
+        self.includeUsage = includeUsage
+    }
+
+    private enum CodingKeys: String, CodingKey {
+        case includeUsage = "include_usage"
     }
 }
 
@@ -96,6 +271,24 @@ public struct ChatConversation: Encodable {
     /// If you're generating long completions, waiting for the response can take many seconds. To get responses sooner, you can 'stream' the completion as it's being generated. This allows you to start printing or processing the beginning of the completion before the full completion is finished.
     /// https://github.com/openai/openai-cookbook/blob/main/examples/How_to_stream_completions.ipynb
     let stream: Bool?
+    /// Chat tools array for function calling.
+    let tools: [ChatTool]?
+    /// Tool selection strategy.
+    let toolChoice: ChatToolChoice?
+    /// Structured output format for chat responses.
+    let responseFormat: ChatResponseFormat?
+    /// Max completion tokens for newer reasoning-capable models.
+    let maxCompletionTokens: Int?
+    /// Reasoning effort for supported chat models.
+    let reasoningEffort: ChatReasoningEffort?
+    /// Allow parallel tool calls.
+    let parallelToolCalls: Bool?
+    /// Request storage behavior.
+    let store: Bool?
+    /// Service tier selection.
+    let serviceTier: ChatServiceTier?
+    /// Stream options payload.
+    let streamOptions: ChatStreamOptions?
 
     enum CodingKeys: String, CodingKey {
         case user
@@ -110,6 +303,15 @@ public struct ChatConversation: Encodable {
         case frequencyPenalty = "frequency_penalty"
         case logitBias = "logit_bias"
         case stream
+        case tools
+        case toolChoice = "tool_choice"
+        case responseFormat = "response_format"
+        case maxCompletionTokens = "max_completion_tokens"
+        case reasoningEffort = "reasoning_effort"
+        case parallelToolCalls = "parallel_tool_calls"
+        case store
+        case serviceTier = "service_tier"
+        case streamOptions = "stream_options"
     }
 }
 

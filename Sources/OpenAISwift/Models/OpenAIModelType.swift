@@ -24,8 +24,29 @@ public enum OpenAIModelType {
     /// ``GPT4`` Family of Models
     case gpt4(GPT4)
     
+    /// ``GPT4o`` Family of Models
+    case gpt4o(GPT4o)
+    
+    /// ``GPT4.1`` Family of Models
+    case gpt41(GPT41)
+    
+    /// ``GPT5`` Family of Models
+    case gpt5(GPT5)
+    
+    /// ``O-Series`` Reasoning Models
+    case reasoning(ReasoningModel)
+    
     /// ``Embedding`` Family of Models
     case embedding(Embedding)
+    
+    /// ``Embedding v3`` Family of Models
+    case embeddingV3(EmbeddingV3)
+    
+    /// Image models
+    case image(ImageModel)
+    
+    /// Audio models
+    case audio(AudioModel)
     
     /// ``Moderation`` Family of Models
     case moderation(Moderation)
@@ -40,7 +61,14 @@ public enum OpenAIModelType {
         case .codex(let model): return model.rawValue
         case .feature(let model): return model.rawValue
         case .chat(let model): return model.rawValue
+        case .gpt4o(let model): return model.rawValue
+        case .gpt41(let model): return model.rawValue
+        case .gpt5(let model): return model.rawValue
+        case .reasoning(let model): return model.rawValue
         case .embedding(let model): return model.rawValue
+        case .embeddingV3(let model): return model.rawValue
+        case .image(let model): return model.rawValue
+        case .audio(let model): return model.rawValue
         case .moderation(let model): return model.rawValue
         case .other(let modelName): return modelName
         }
@@ -136,6 +164,45 @@ public enum OpenAIModelType {
         case gpt4_32k_0314 = "gpt-4-32k-0314"
     }
     
+    /// GPT-4o model family.
+    public enum GPT4o: String {
+        case gpt4o = "gpt-4o"
+        case gpt4oMini = "gpt-4o-mini"
+        case gpt4oAudioPreview = "gpt-4o-audio-preview"
+        case gpt4oSearchPreview = "gpt-4o-search-preview"
+    }
+    
+    /// GPT-4.1 model family.
+    public enum GPT41: String {
+        case gpt41 = "gpt-4.1"
+        case gpt41Mini = "gpt-4.1-mini"
+        case gpt41Nano = "gpt-4.1-nano"
+    }
+    
+    /// GPT-5 model family.
+    public enum GPT5: String {
+        case gpt5 = "gpt-5"
+        case gpt5Mini = "gpt-5-mini"
+        case gpt5Nano = "gpt-5-nano"
+        case gpt5Pro = "gpt-5-pro"
+        case gpt51 = "gpt-5.1"
+        case gpt51Mini = "gpt-5.1-mini"
+        case gpt51Codex = "gpt-5.1-codex"
+        case gpt52 = "gpt-5.2"
+        case gpt5Codex = "gpt-5-codex"
+    }
+    
+    /// Reasoning model family.
+    public enum ReasoningModel: String {
+        case o1 = "o1"
+        case o1Mini = "o1-mini"
+        case o1Pro = "o1-pro"
+        case o3 = "o3"
+        case o3Mini = "o3-mini"
+        case o3Pro = "o3-pro"
+        case o4Mini = "o4-mini"
+    }
+    
     
     /// A set of models for the embedding
     /// You can read the [API Docs](https://platform.openai.com/docs/api-reference/embeddings)
@@ -145,6 +212,26 @@ public enum OpenAIModelType {
         ///
         /// > Model Name: text-embedding-ada-002
         case ada = "text-embedding-ada-002"
+    }
+    
+    /// Embedding v3 model family.
+    public enum EmbeddingV3: String {
+        case textEmbedding3Small = "text-embedding-3-small"
+        case textEmbedding3Large = "text-embedding-3-large"
+    }
+    
+    /// Image model family.
+    public enum ImageModel: String {
+        case dalle3 = "dall-e-3"
+        case gptImage1 = "gpt-image-1"
+        case gptImage1Mini = "gpt-image-1-mini"
+    }
+    
+    /// Audio model family.
+    public enum AudioModel: String {
+        case tts1 = "tts-1"
+        case tts1HD = "tts-1-hd"
+        case whisper1 = "whisper-1"
     }
     
     /// A set of models for the moderations endpoint

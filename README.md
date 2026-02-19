@@ -72,9 +72,107 @@ private lazy var proxyOpenAIBackend: OpenAISwift = .init(
 
 This framework supports Swift concurrency; each example below has both an async/await and completion handler variant.
 
+### Responses API (Recommended)
+
+OpenAI recommends using the Responses API for new integrations.
+
+Simple text request:
+
+```swift
+do {
+    let response = try await openAI.sendResponse(
+        with: "Write a one-sentence bedtime story about a unicorn.",
+        model: .gpt5(.gpt5),
+        instructions: "You are a helpful assistant.",
+        store: true
+    )
+    print(response.outputText)
+} catch {
+    print(error.localizedDescription)
+}
+```
+
+Typed request with tools and structured output:
+
+```swift
+let weatherTool = ResponseTool.function(.init(
+    name: "get_weather",
+    description: "Returns weather for a city",
+    parameters: [
+        "type": .string("object"),
+        "properties": .object([
+            "city": .object(["type": .string("string")])
+        ]),
+        "required": .array([.string("city")])
+    ]
+))
+
+let request = ResponseRequest(
+    model: OpenAIModelType.gpt5(.gpt5Mini).modelName,
+    input: .text("What's the weather in Paris?"),
+    tools: [weatherTool],
+    toolChoice: .auto,
+    text: .init(format: .text),
+    store: true
+)
+
+let response = try await openAI.sendResponse(with: request)
+print(response.outputText)
+```
+
+Streaming response:
+
+```swift
+let request = ResponseRequest(
+    model: OpenAIModelType.gpt5(.gpt5Mini).modelName,
+    input: .text("List three Swift concurrency tips.")
+)
+
+for await event in openAI.sendStreamingResponse(with: request) {
+    switch event {
+    case .success(let value):
+        if value.type == "response.output_text.delta", let delta = value.delta {
+            print(delta, terminator: "")
+        }
+    case .failure(let error):
+        print(error.localizedDescription)
+    }
+}
+```
+
+Streaming response with automatic text aggregation:
+
+```swift
+let request = ResponseRequest(
+    model: OpenAIModelType.gpt5(.gpt5Mini).modelName,
+    input: .text("Write a short haiku about Swift.")
+)
+
+do {
+    let text = try await openAI.sendStreamingResponseAndCollectText(with: request)
+    print(text)
+} catch {
+    print(error.localizedDescription)
+}
+```
+
+For migration details, see the official guide:
+https://developers.openai.com/api/docs/guides/migrate-to-responses#migrating-from-chat-completions
+
+### Migration Checklist (Chat -> Responses)
+
+- Keep existing `sendChat` / `sendCompletion` / `sendEdits` calls running as legacy.
+- Start new features with `sendResponse(with:)`.
+- Replace manual multi-turn message arrays with `previousResponseID` when appropriate.
+- Move structured outputs from Chat `response_format` to Responses `text.format`.
+- Prefer Responses streaming (`sendStreamingResponse`) and aggregate text with `sendStreamingResponseAndCollectText`.
+- If you need retrieval/stateful workflows, use `getResponse`, `deleteResponse`, and `listResponseInputItems`.
+
 ### [Completions](https://platform.openai.com/docs/api-reference/completions)
 
 Predict completions for input text.
+
+> Legacy API. Prefer `sendResponse(with:)` for new projects.
 
 ```swift
 openAI.sendCompletion(with: "Hello how are you") { result in // Result<OpenAI, OpenAIError>
@@ -110,6 +208,8 @@ For a full list of supported models, see [OpenAIModelType.swift](https://github.
 ### [Chat](https://platform.openai.com/docs/api-reference/chat)
 
 Get responses to chat conversations through ChatGPT (aka GPT-3.5) and GPT-4 (in beta).
+
+> Legacy-compatible surface. For new builds, prefer `sendResponse(with:)`.
 
 ```swift
 do {
@@ -170,6 +270,8 @@ openAI.sendImages(with: "A 3d render of a rocket ship", numImages: 1, size: .siz
 ### [Edits](https://platform.openai.com/docs/api-reference/edits)
 
 Edits text based on a prompt and an instruction.
+
+> Deprecated API. Kept for backward compatibility.
 
 ```swift
 do {

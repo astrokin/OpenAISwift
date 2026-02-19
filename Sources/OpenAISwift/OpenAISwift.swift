@@ -14,6 +14,7 @@ public enum OpenAIError: Error {
 public class OpenAISwift {
     fileprivate let config: Config
     fileprivate let handler = ServerSentEventsHandler()
+    fileprivate let responsesHandler = ResponsesServerSentEventsHandler()
 
     /// Configuration object for the client
     public struct Config {
@@ -53,6 +54,7 @@ extension OpenAISwift {
     ///   - model: The AI Model to Use. Set to `OpenAIModelType.gpt3(.davinci)` by default which is the most capable model
     ///   - maxTokens: The limit character for the returned response, defaults to 16 as per the API
     ///   - completionHandler: Returns an OpenAI Data Model
+    @available(*, deprecated, message: "Completions API is legacy. Prefer sendResponse(with:) with /v1/responses.")
     public func sendCompletion(with prompt: String, model: OpenAIModelType = .gpt3(.davinci), maxTokens: Int = 16, temperature: Double = 1, completionHandler: @escaping (Result<OpenAI<TextResult>, OpenAIError>) -> Void) {
         let endpoint = OpenAIEndpointProvider.API.completions
         let body = Command(prompt: prompt, model: model.modelName, maxTokens: maxTokens, temperature: temperature)
@@ -79,6 +81,7 @@ extension OpenAISwift {
     ///   - model: The Model to use, the only support model is `text-davinci-edit-001`
     ///   - input: The Input For Example "My nam is Adam"
     ///   - completionHandler: Returns an OpenAI Data Model
+    @available(*, deprecated, message: "Edits API is legacy/deprecated. Prefer sendResponse(with:) with /v1/responses.")
     public func sendEdits(with instruction: String, model: OpenAIModelType = .feature(.davinci), input: String = "", completionHandler: @escaping (Result<OpenAI<TextResult>, OpenAIError>) -> Void) {
         let endpoint = OpenAIEndpointProvider.API.edits
         let body = Instruction(instruction: instruction, model: model.modelName, input: input)
@@ -149,6 +152,14 @@ extension OpenAISwift {
                          presencePenalty: Double? = 0,
                          frequencyPenalty: Double? = 0,
                          logitBias: [Int: Double]? = nil,
+                         tools: [ChatTool]? = nil,
+                         toolChoice: ChatToolChoice? = nil,
+                         responseFormat: ChatResponseFormat? = nil,
+                         maxCompletionTokens: Int? = nil,
+                         reasoningEffort: ChatReasoningEffort? = nil,
+                         parallelToolCalls: Bool? = nil,
+                         store: Bool? = nil,
+                         serviceTier: ChatServiceTier? = nil,
                          completionHandler: @escaping (Result<OpenAI<MessageResult>, OpenAIError>) -> Void) {
         let endpoint = OpenAIEndpointProvider.API.chat
         let body = ChatConversation(user: user,
@@ -162,7 +173,16 @@ extension OpenAISwift {
                                     presencePenalty: presencePenalty,
                                     frequencyPenalty: frequencyPenalty,
                                     logitBias: logitBias,
-                                    stream: false)
+                                    stream: false,
+                                    tools: tools,
+                                    toolChoice: toolChoice,
+                                    responseFormat: responseFormat,
+                                    maxCompletionTokens: maxCompletionTokens,
+                                    reasoningEffort: reasoningEffort,
+                                    parallelToolCalls: parallelToolCalls,
+                                    store: store,
+                                    serviceTier: serviceTier,
+                                    streamOptions: nil)
 
         let request = prepareRequest(endpoint, body: body)
         
@@ -241,6 +261,15 @@ extension OpenAISwift {
                                   presencePenalty: Double? = 0,
                                   frequencyPenalty: Double? = 0,
                                   logitBias: [Int: Double]? = nil,
+                                  tools: [ChatTool]? = nil,
+                                  toolChoice: ChatToolChoice? = nil,
+                                  responseFormat: ChatResponseFormat? = nil,
+                                  maxCompletionTokens: Int? = nil,
+                                  reasoningEffort: ChatReasoningEffort? = nil,
+                                  parallelToolCalls: Bool? = nil,
+                                  store: Bool? = nil,
+                                  serviceTier: ChatServiceTier? = nil,
+                                  streamOptions: ChatStreamOptions? = nil,
                                   onEventReceived: ((Result<OpenAI<StreamMessageResult>, OpenAIError>) -> Void)? = nil,
                                   onComplete: (() -> Void)? = nil) {
         let endpoint = OpenAIEndpointProvider.API.chat
@@ -255,13 +284,172 @@ extension OpenAISwift {
                                     presencePenalty: presencePenalty,
                                     frequencyPenalty: frequencyPenalty,
                                     logitBias: logitBias,
-                                    stream: true)
+                                    stream: true,
+                                    tools: tools,
+                                    toolChoice: toolChoice,
+                                    responseFormat: responseFormat,
+                                    maxCompletionTokens: maxCompletionTokens,
+                                    reasoningEffort: reasoningEffort,
+                                    parallelToolCalls: parallelToolCalls,
+                                    store: store,
+                                    serviceTier: serviceTier,
+                                    streamOptions: streamOptions)
         let request = prepareRequest(endpoint, body: body)
         handler.onEventReceived = onEventReceived
         handler.onComplete = onComplete
         handler.connect(with: request)
     }
 
+    /// Send a Responses API request to the OpenAI API
+    /// - Parameters:
+    ///   - requestBody: The full request payload for /v1/responses
+    ///   - completionHandler: Returns a ResponseObject
+    public func sendResponse(with requestBody: ResponseRequest,
+                             completionHandler: @escaping (Result<ResponseObject, OpenAIError>) -> Void) {
+        let endpoint = OpenAIEndpointProvider.API.responses
+        let request = prepareRequest(endpoint, body: requestBody)
+
+        makeRequest(request: request) { result in
+            switch result {
+            case .success(let success):
+                if let apiError = try? JSONDecoder().decode(ChatError.self, from: success) {
+                    completionHandler(.failure(.chatError(error: apiError.error)))
+                    return
+                }
+
+                do {
+                    let response = try JSONDecoder().decode(ResponseObject.self, from: success)
+                    completionHandler(.success(response))
+                } catch {
+                    completionHandler(.failure(.decodingError(error: error)))
+                }
+            case .failure(let failure):
+                completionHandler(.failure(.genericError(error: failure)))
+            }
+        }
+    }
+
+    /// Convenience helper for simple text inputs with Responses API
+    /// - Parameters:
+    ///   - input: A plain text input
+    ///   - model: The model name
+    ///   - instructions: Optional high-level instructions
+    ///   - previousResponseID: Optional ID for multi-turn chaining
+    ///   - store: Optional stateful storage flag
+    ///   - completionHandler: Returns a ResponseObject
+    public func sendResponse(with input: String,
+                             model: OpenAIModelType = .other("gpt-5"),
+                             instructions: String? = nil,
+                             previousResponseID: String? = nil,
+                             store: Bool? = nil,
+                             completionHandler: @escaping (Result<ResponseObject, OpenAIError>) -> Void) {
+        let requestBody = ResponseRequest(
+            model: model.modelName,
+            input: .text(input),
+            instructions: instructions,
+            previousResponseID: previousResponseID,
+            store: store
+        )
+        sendResponse(with: requestBody, completionHandler: completionHandler)
+    }
+
+    /// Send a streaming Responses API request to the OpenAI API
+    /// - Parameters:
+    ///   - requestBody: The request payload for /v1/responses
+    ///   - onEventReceived: Called for each decoded stream event
+    ///   - onComplete: Triggers when the stream completes
+    public func sendStreamingResponse(with requestBody: ResponseRequest,
+                                      onEventReceived: ((Result<ResponseStreamEvent, OpenAIError>) -> Void)? = nil,
+                                      onComplete: (() -> Void)? = nil) {
+        let endpoint = OpenAIEndpointProvider.API.responses
+        var requestBody = requestBody
+        requestBody.stream = true
+        let request = prepareRequest(endpoint, body: requestBody)
+        responsesHandler.onEventReceived = onEventReceived
+        responsesHandler.onComplete = onComplete
+        responsesHandler.connect(with: request)
+    }
+
+    /// Retrieve a stored response by ID.
+    /// - Parameters:
+    ///   - responseID: Response identifier.
+    ///   - completionHandler: Returns a ResponseObject.
+    public func getResponse(with responseID: String,
+                            completionHandler: @escaping (Result<ResponseObject, OpenAIError>) -> Void) {
+        let basePath = config.endpointProvider.getPath(api: .responses)
+        let request = prepareRequest(
+            path: basePath + "/\(escapedPathComponent(responseID))",
+            method: "GET"
+        )
+
+        makeRequest(request: request) { result in
+            switch result {
+            case .success(let success):
+                do {
+                    let response = try JSONDecoder().decode(ResponseObject.self, from: success)
+                    completionHandler(.success(response))
+                } catch {
+                    completionHandler(.failure(.decodingError(error: error)))
+                }
+            case .failure(let failure):
+                completionHandler(.failure(.genericError(error: failure)))
+            }
+        }
+    }
+
+    /// Delete a stored response by ID.
+    /// - Parameters:
+    ///   - responseID: Response identifier.
+    ///   - completionHandler: Returns deletion result.
+    public func deleteResponse(with responseID: String,
+                               completionHandler: @escaping (Result<ResponseDeletionResult, OpenAIError>) -> Void) {
+        let basePath = config.endpointProvider.getPath(api: .responses)
+        let request = prepareRequest(
+            path: basePath + "/\(escapedPathComponent(responseID))",
+            method: "DELETE"
+        )
+
+        makeRequest(request: request) { result in
+            switch result {
+            case .success(let success):
+                do {
+                    let response = try JSONDecoder().decode(ResponseDeletionResult.self, from: success)
+                    completionHandler(.success(response))
+                } catch {
+                    completionHandler(.failure(.decodingError(error: error)))
+                }
+            case .failure(let failure):
+                completionHandler(.failure(.genericError(error: failure)))
+            }
+        }
+    }
+
+    /// List response input items for a stored response.
+    /// - Parameters:
+    ///   - responseID: Response identifier.
+    ///   - completionHandler: Returns input items page.
+    public func listResponseInputItems(for responseID: String,
+                                       completionHandler: @escaping (Result<ResponseInputItemsList, OpenAIError>) -> Void) {
+        let basePath = config.endpointProvider.getPath(api: .responses)
+        let request = prepareRequest(
+            path: basePath + "/\(escapedPathComponent(responseID))/input_items",
+            method: "GET"
+        )
+
+        makeRequest(request: request) { result in
+            switch result {
+            case .success(let success):
+                do {
+                    let response = try JSONDecoder().decode(ResponseInputItemsList.self, from: success)
+                    completionHandler(.success(response))
+                } catch {
+                    completionHandler(.failure(.decodingError(error: error)))
+                }
+            case .failure(let failure):
+                completionHandler(.failure(.genericError(error: failure)))
+            }
+        }
+    }
 
     /// Send a Image generation request to the OpenAI API
     /// - Parameters:
@@ -308,21 +496,34 @@ extension OpenAISwift {
     }
     
     private func prepareRequest<BodyType: Encodable>(_ endpoint: OpenAIEndpointProvider.API, body: BodyType) -> URLRequest {
-        var urlComponents = URLComponents(url: URL(string: config.baseURL)!, resolvingAgainstBaseURL: true)
-        urlComponents?.path = config.endpointProvider.getPath(api: endpoint)
-        var request = URLRequest(url: urlComponents!.url!)
-        request.httpMethod = config.endpointProvider.getMethod(api: endpoint)
-        
-        config.authorizeRequest(&request)
-        
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-        
         let encoder = JSONEncoder()
-        if let encoded = try? encoder.encode(body) {
-            request.httpBody = encoded
+        let encoded = try? encoder.encode(body)
+        return prepareRequest(
+            path: config.endpointProvider.getPath(api: endpoint),
+            method: config.endpointProvider.getMethod(api: endpoint),
+            body: encoded
+        )
+    }
+
+    private func prepareRequest(path: String, method: String, body: Data? = nil) -> URLRequest {
+        var urlComponents = URLComponents(url: URL(string: config.baseURL)!, resolvingAgainstBaseURL: true)
+        urlComponents?.path = path
+        var request = URLRequest(url: urlComponents!.url!)
+        request.httpMethod = method
+
+        config.authorizeRequest(&request)
+
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+
+        if let body {
+            request.httpBody = body
         }
-        
+
         return request
+    }
+
+    private func escapedPathComponent(_ value: String) -> String {
+        value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
     }
 }
 
@@ -334,6 +535,7 @@ extension OpenAISwift {
     ///   - maxTokens: The limit character for the returned response, defaults to 16 as per the API
     ///   - temperature: Higher values like 0.8 will make the output more random, while lower values like 0.2 will make it more focused and deterministic. Defaults to 1
     /// - Returns: Returns an OpenAI Data Model
+    @available(*, deprecated, message: "Completions API is legacy. Prefer sendResponse(with:) with /v1/responses.")
     @available(swift 5.5)
     @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
     public func sendCompletion(with prompt: String, model: OpenAIModelType = .gpt3(.davinci), maxTokens: Int = 16, temperature: Double = 1) async throws -> OpenAI<TextResult> {
@@ -350,6 +552,7 @@ extension OpenAISwift {
     ///   - model: The Model to use, the only support model is `text-davinci-edit-001`
     ///   - input: The Input For Example "My nam is Adam"
     /// - Returns: Returns an OpenAI Data Model
+    @available(*, deprecated, message: "Edits API is legacy/deprecated. Prefer sendResponse(with:) with /v1/responses.")
     @available(swift 5.5)
     @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
     public func sendEdits(with instruction: String, model: OpenAIModelType = .feature(.davinci), input: String = "") async throws -> OpenAI<TextResult> {
@@ -386,7 +589,15 @@ extension OpenAISwift {
                          maxTokens: Int? = nil,
                          presencePenalty: Double? = 0,
                          frequencyPenalty: Double? = 0,
-                         logitBias: [Int: Double]? = nil) async throws -> OpenAI<MessageResult> {
+                         logitBias: [Int: Double]? = nil,
+                         tools: [ChatTool]? = nil,
+                         toolChoice: ChatToolChoice? = nil,
+                         responseFormat: ChatResponseFormat? = nil,
+                         maxCompletionTokens: Int? = nil,
+                         reasoningEffort: ChatReasoningEffort? = nil,
+                         parallelToolCalls: Bool? = nil,
+                         store: Bool? = nil,
+                         serviceTier: ChatServiceTier? = nil) async throws -> OpenAI<MessageResult> {
         return try await withCheckedThrowingContinuation { continuation in
             sendChat(with: messages,
                      model: model,
@@ -398,7 +609,15 @@ extension OpenAISwift {
                      maxTokens: maxTokens,
                      presencePenalty: presencePenalty,
                      frequencyPenalty: frequencyPenalty,
-                     logitBias: logitBias) { result in
+                     logitBias: logitBias,
+                     tools: tools,
+                     toolChoice: toolChoice,
+                     responseFormat: responseFormat,
+                     maxCompletionTokens: maxCompletionTokens,
+                     reasoningEffort: reasoningEffort,
+                     parallelToolCalls: parallelToolCalls,
+                     store: store,
+                     serviceTier: serviceTier) { result in
                 switch result {
                     case .success: continuation.resume(with: result)
                     case .failure(let failure): continuation.resume(throwing: failure)
@@ -434,7 +653,16 @@ extension OpenAISwift {
                                   maxTokens: Int? = nil,
                                   presencePenalty: Double? = 0,
                                   frequencyPenalty: Double? = 0,
-                                  logitBias: [Int: Double]? = nil) -> AsyncStream<Result<OpenAI<StreamMessageResult>, OpenAIError>> {
+                                  logitBias: [Int: Double]? = nil,
+                                  tools: [ChatTool]? = nil,
+                                  toolChoice: ChatToolChoice? = nil,
+                                  responseFormat: ChatResponseFormat? = nil,
+                                  maxCompletionTokens: Int? = nil,
+                                  reasoningEffort: ChatReasoningEffort? = nil,
+                                  parallelToolCalls: Bool? = nil,
+                                  store: Bool? = nil,
+                                  serviceTier: ChatServiceTier? = nil,
+                                  streamOptions: ChatStreamOptions? = nil) -> AsyncStream<Result<OpenAI<StreamMessageResult>, OpenAIError>> {
         return AsyncStream { continuation in
             sendStreamingChat(
                 with: messages,
@@ -448,6 +676,15 @@ extension OpenAISwift {
                 presencePenalty: presencePenalty,
                 frequencyPenalty: frequencyPenalty,
                 logitBias: logitBias,
+                tools: tools,
+                toolChoice: toolChoice,
+                responseFormat: responseFormat,
+                maxCompletionTokens: maxCompletionTokens,
+                reasoningEffort: reasoningEffort,
+                parallelToolCalls: parallelToolCalls,
+                store: store,
+                serviceTier: serviceTier,
+                streamOptions: streamOptions,
                 onEventReceived: { result in
                     continuation.yield(result)
                 }) {
@@ -502,5 +739,131 @@ extension OpenAISwift {
                 continuation.resume(with: result)
             }
         }
+    }
+
+    /// Send a Responses API request to the OpenAI API
+    /// - Parameters:
+    ///   - requestBody: The full request payload for /v1/responses
+    /// - Returns: A ResponseObject
+    @available(swift 5.5)
+    @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
+    public func sendResponse(with requestBody: ResponseRequest) async throws -> ResponseObject {
+        return try await withCheckedThrowingContinuation { continuation in
+            sendResponse(with: requestBody) { result in
+                continuation.resume(with: result)
+            }
+        }
+    }
+
+    /// Convenience helper for simple text inputs with Responses API
+    /// - Parameters:
+    ///   - input: A plain text input
+    ///   - model: The model name
+    ///   - instructions: Optional high-level instructions
+    ///   - previousResponseID: Optional ID for multi-turn chaining
+    ///   - store: Optional stateful storage flag
+    /// - Returns: A ResponseObject
+    @available(swift 5.5)
+    @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
+    public func sendResponse(with input: String,
+                             model: OpenAIModelType = .other("gpt-5"),
+                             instructions: String? = nil,
+                             previousResponseID: String? = nil,
+                             store: Bool? = nil) async throws -> ResponseObject {
+        return try await withCheckedThrowingContinuation { continuation in
+            sendResponse(with: input,
+                         model: model,
+                         instructions: instructions,
+                         previousResponseID: previousResponseID,
+                         store: store) { result in
+                continuation.resume(with: result)
+            }
+        }
+    }
+
+    /// Retrieve a stored response by ID.
+    /// - Parameter responseID: Response identifier.
+    /// - Returns: A ResponseObject.
+    @available(swift 5.5)
+    @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
+    public func getResponse(with responseID: String) async throws -> ResponseObject {
+        return try await withCheckedThrowingContinuation { continuation in
+            getResponse(with: responseID) { result in
+                continuation.resume(with: result)
+            }
+        }
+    }
+
+    /// Delete a stored response by ID.
+    /// - Parameter responseID: Response identifier.
+    /// - Returns: Deletion result.
+    @available(swift 5.5)
+    @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
+    public func deleteResponse(with responseID: String) async throws -> ResponseDeletionResult {
+        return try await withCheckedThrowingContinuation { continuation in
+            deleteResponse(with: responseID) { result in
+                continuation.resume(with: result)
+            }
+        }
+    }
+
+    /// List input items for a stored response.
+    /// - Parameter responseID: Response identifier.
+    /// - Returns: A paginated response input item list.
+    @available(swift 5.5)
+    @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
+    public func listResponseInputItems(for responseID: String) async throws -> ResponseInputItemsList {
+        return try await withCheckedThrowingContinuation { continuation in
+            listResponseInputItems(for: responseID) { result in
+                continuation.resume(with: result)
+            }
+        }
+    }
+
+    /// Send a streaming Responses API request to the OpenAI API
+    /// - Parameter requestBody: The request payload for /v1/responses
+    /// - Returns: Stream of response events
+    @available(swift 5.5)
+    @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
+    public func sendStreamingResponse(with requestBody: ResponseRequest) -> AsyncStream<Result<ResponseStreamEvent, OpenAIError>> {
+        return AsyncStream { continuation in
+            sendStreamingResponse(
+                with: requestBody,
+                onEventReceived: { result in
+                    continuation.yield(result)
+                },
+                onComplete: {
+                    continuation.finish()
+                }
+            )
+        }
+    }
+
+    /// Collect output text from a Responses API event stream.
+    /// - Parameter stream: A stream of response events.
+    /// - Returns: Aggregated output text from `response.output_text.*` events.
+    @available(swift 5.5)
+    @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
+    public func collectOutputText(from stream: AsyncStream<Result<ResponseStreamEvent, OpenAIError>>) async throws -> String {
+        var accumulator = ResponseStreamTextAccumulator()
+        for await result in stream {
+            switch result {
+            case .success(let event):
+                accumulator.apply(event)
+            case .failure(let error):
+                throw error
+            }
+        }
+        return accumulator.outputText
+    }
+
+    /// Send a streaming Responses API request and return aggregated output text.
+    /// - Parameter requestBody: The request payload for /v1/responses.
+    /// - Returns: Aggregated output text from `response.output_text.*` events.
+    @available(swift 5.5)
+    @available(macOS 10.15, iOS 13, watchOS 6, tvOS 13, *)
+    public func sendStreamingResponseAndCollectText(with requestBody: ResponseRequest) async throws -> String {
+        let stream = sendStreamingResponse(with: requestBody)
+        return try await collectOutputText(from: stream)
     }
 }
