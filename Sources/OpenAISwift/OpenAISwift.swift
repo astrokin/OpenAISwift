@@ -161,19 +161,22 @@ extension OpenAISwift {
                          store: Bool? = nil,
                          serviceTier: ChatServiceTier? = nil,
                          completionHandler: @escaping (Result<OpenAI<MessageResult>, OpenAIError>) -> Void) {
+        let normalizedStop = normalizeChatStopSequences(
+            modelName: model.modelName,
+            stop: stop
+        )
         let normalized = normalizeChatTokenFields(
             modelName: model.modelName,
             maxTokens: maxTokens,
             maxCompletionTokens: maxCompletionTokens
         )
-        let endpoint = OpenAIEndpointProvider.API.chat
         let body = ChatConversation(user: user,
                                     messages: messages,
                                     model: model.modelName,
                                     temperature: temperature,
                                     topProbabilityMass: topProbabilityMass,
                                     choices: choices,
-                                    stop: stop,
+                                    stop: normalizedStop,
                                     maxTokens: normalized.maxTokens,
                                     presencePenalty: presencePenalty,
                                     frequencyPenalty: frequencyPenalty,
@@ -188,26 +191,23 @@ extension OpenAISwift {
                                     store: store,
                                     serviceTier: serviceTier,
                                     streamOptions: nil)
-
-        let request = prepareRequest(endpoint, body: body)
-        
-        makeRequest(request: request) { result in
+        makeChatRequestRecoveringUnsupportedParameters(body: body) { result in
             switch result {
             case .success(let success):
                 if let chatErr = try? JSONDecoder().decode(ChatError.self, from: success) as ChatError {
                     completionHandler(.failure(.chatError(error: chatErr.error)))
                     return
                 }
-                
+
                 do {
                     let res = try JSONDecoder().decode(OpenAI<MessageResult>.self, from: success)
                     completionHandler(.success(res))
                 } catch {
                     completionHandler(.failure(.decodingError(error: error)))
                 }
-                
+
             case .failure(let failure):
-                completionHandler(.failure(.genericError(error: failure)))
+                completionHandler(.failure(failure))
             }
         }
     }
@@ -277,6 +277,10 @@ extension OpenAISwift {
                                   streamOptions: ChatStreamOptions? = nil,
                                   onEventReceived: ((Result<OpenAI<StreamMessageResult>, OpenAIError>) -> Void)? = nil,
                                   onComplete: (() -> Void)? = nil) {
+        let normalizedStop = normalizeChatStopSequences(
+            modelName: model.modelName,
+            stop: stop
+        )
         let normalized = normalizeChatTokenFields(
             modelName: model.modelName,
             maxTokens: maxTokens,
@@ -289,7 +293,7 @@ extension OpenAISwift {
                                     temperature: temperature,
                                     topProbabilityMass: topProbabilityMass,
                                     choices: choices,
-                                    stop: stop,
+                                    stop: normalizedStop,
                                     maxTokens: normalized.maxTokens,
                                     presencePenalty: presencePenalty,
                                     frequencyPenalty: frequencyPenalty,
@@ -504,6 +508,99 @@ extension OpenAISwift {
         }
         task.resume()
     }
+
+    private func makeRequestWithResponse(request: URLRequest, completionHandler: @escaping (Result<(Data, HTTPURLResponse), Error>) -> Void) {
+        let session = config.session
+        let task = session.dataTask(with: request) { (data, response, error) in
+            if let error = error {
+                completionHandler(.failure(error))
+                return
+            }
+
+            guard let httpResponse = response as? HTTPURLResponse else {
+                let error = NSError(domain: "OpenAI", code: 6667, userInfo: [NSLocalizedDescriptionKey: "Invalid HTTP response"])
+                completionHandler(.failure(error))
+                return
+            }
+
+            completionHandler(.success((data ?? Data(), httpResponse)))
+        }
+        task.resume()
+    }
+
+    private func makeChatRequestRecoveringUnsupportedParameters(body: ChatConversation,
+                                                                completionHandler: @escaping (Result<Data, OpenAIError>) -> Void) {
+        let path = config.endpointProvider.getPath(api: .chat)
+        let method = config.endpointProvider.getMethod(api: .chat)
+        var omittedParameters = Set<String>()
+        let maxAutoRetries = 8
+
+        func attempt(_ retriesUsed: Int) {
+            do {
+                let encodedBody = try encodedChatConversation(body, omitting: omittedParameters)
+                let request = prepareRequest(path: path, method: method, body: encodedBody)
+
+                self.makeRequestWithResponse(request: request) { result in
+                    switch result {
+                    case .failure(let error):
+                        completionHandler(.failure(.genericError(error: error)))
+
+                    case .success(let (data, response)):
+                        if (200...299).contains(response.statusCode) {
+                            completionHandler(.success(data))
+                            return
+                        }
+
+                        if let chatError = self.decodeChatError(from: data) {
+                            if response.statusCode == 400,
+                               chatError.code == "unsupported_parameter",
+                               let unsupportedParameter = chatError.param,
+                               !unsupportedParameter.isEmpty,
+                               !omittedParameters.contains(unsupportedParameter),
+                               retriesUsed < maxAutoRetries {
+                                omittedParameters.insert(unsupportedParameter)
+                                attempt(retriesUsed + 1)
+                                return
+                            }
+
+                            completionHandler(.failure(.chatError(error: chatError)))
+                            return
+                        }
+
+                        completionHandler(.failure(.networkError(code: response.statusCode)))
+                    }
+                }
+            } catch {
+                completionHandler(.failure(.genericError(error: error)))
+            }
+        }
+
+        attempt(0)
+    }
+
+    private func encodedChatConversation(_ conversation: ChatConversation, omitting keys: Set<String>) throws -> Data {
+        let encoded = try JSONEncoder().encode(conversation)
+        guard !keys.isEmpty else {
+            return encoded
+        }
+
+        guard var payload = try JSONSerialization.jsonObject(with: encoded) as? [String: Any] else {
+            return encoded
+        }
+
+        for key in keys {
+            payload.removeValue(forKey: key)
+        }
+
+        return try JSONSerialization.data(withJSONObject: payload)
+    }
+
+    private func decodeChatError(from data: Data) -> ChatError.Payload? {
+        guard !data.isEmpty else {
+            return nil
+        }
+        return try? JSONDecoder().decode(ChatError.self, from: data).error
+    }
     
     private func prepareRequest<BodyType: Encodable>(_ endpoint: OpenAIEndpointProvider.API, body: BodyType) -> URLRequest {
         let encoder = JSONEncoder()
@@ -548,7 +645,24 @@ extension OpenAISwift {
         return (maxTokens, nil)
     }
 
+    private func normalizeChatStopSequences(modelName: String, stop: [String]?) -> [String]? {
+        guard let stop, !stop.isEmpty else {
+            return nil
+        }
+
+        // GPT-5/o-series style models reject `stop`.
+        if requiresStopOmission(modelName: modelName) {
+            return nil
+        }
+        return stop
+    }
+
     private func requiresMaxCompletionTokens(modelName: String) -> Bool {
+        let lower = modelName.lowercased()
+        return lower.hasPrefix("gpt-5") || lower.hasPrefix("o1") || lower.hasPrefix("o3") || lower.hasPrefix("o4")
+    }
+
+    private func requiresStopOmission(modelName: String) -> Bool {
         let lower = modelName.lowercased()
         return lower.hasPrefix("gpt-5") || lower.hasPrefix("o1") || lower.hasPrefix("o3") || lower.hasPrefix("o4")
     }
