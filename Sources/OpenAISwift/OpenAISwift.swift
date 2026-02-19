@@ -161,6 +161,11 @@ extension OpenAISwift {
                          store: Bool? = nil,
                          serviceTier: ChatServiceTier? = nil,
                          completionHandler: @escaping (Result<OpenAI<MessageResult>, OpenAIError>) -> Void) {
+        let normalized = normalizeChatTokenFields(
+            modelName: model.modelName,
+            maxTokens: maxTokens,
+            maxCompletionTokens: maxCompletionTokens
+        )
         let endpoint = OpenAIEndpointProvider.API.chat
         let body = ChatConversation(user: user,
                                     messages: messages,
@@ -169,7 +174,7 @@ extension OpenAISwift {
                                     topProbabilityMass: topProbabilityMass,
                                     choices: choices,
                                     stop: stop,
-                                    maxTokens: maxTokens,
+                                    maxTokens: normalized.maxTokens,
                                     presencePenalty: presencePenalty,
                                     frequencyPenalty: frequencyPenalty,
                                     logitBias: logitBias,
@@ -177,7 +182,7 @@ extension OpenAISwift {
                                     tools: tools,
                                     toolChoice: toolChoice,
                                     responseFormat: responseFormat,
-                                    maxCompletionTokens: maxCompletionTokens,
+                                    maxCompletionTokens: normalized.maxCompletionTokens,
                                     reasoningEffort: reasoningEffort,
                                     parallelToolCalls: parallelToolCalls,
                                     store: store,
@@ -272,6 +277,11 @@ extension OpenAISwift {
                                   streamOptions: ChatStreamOptions? = nil,
                                   onEventReceived: ((Result<OpenAI<StreamMessageResult>, OpenAIError>) -> Void)? = nil,
                                   onComplete: (() -> Void)? = nil) {
+        let normalized = normalizeChatTokenFields(
+            modelName: model.modelName,
+            maxTokens: maxTokens,
+            maxCompletionTokens: maxCompletionTokens
+        )
         let endpoint = OpenAIEndpointProvider.API.chat
         let body = ChatConversation(user: user,
                                     messages: messages,
@@ -280,7 +290,7 @@ extension OpenAISwift {
                                     topProbabilityMass: topProbabilityMass,
                                     choices: choices,
                                     stop: stop,
-                                    maxTokens: maxTokens,
+                                    maxTokens: normalized.maxTokens,
                                     presencePenalty: presencePenalty,
                                     frequencyPenalty: frequencyPenalty,
                                     logitBias: logitBias,
@@ -288,7 +298,7 @@ extension OpenAISwift {
                                     tools: tools,
                                     toolChoice: toolChoice,
                                     responseFormat: responseFormat,
-                                    maxCompletionTokens: maxCompletionTokens,
+                                    maxCompletionTokens: normalized.maxCompletionTokens,
                                     reasoningEffort: reasoningEffort,
                                     parallelToolCalls: parallelToolCalls,
                                     store: store,
@@ -524,6 +534,23 @@ extension OpenAISwift {
 
     private func escapedPathComponent(_ value: String) -> String {
         value.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? value
+    }
+
+    private func normalizeChatTokenFields(modelName: String, maxTokens: Int?, maxCompletionTokens: Int?) -> (maxTokens: Int?, maxCompletionTokens: Int?) {
+        // GPT-5/o-series style models reject `max_tokens` and require `max_completion_tokens`.
+        guard maxCompletionTokens == nil, let maxTokens else {
+            return (maxTokens, maxCompletionTokens)
+        }
+
+        if requiresMaxCompletionTokens(modelName: modelName) {
+            return (nil, maxTokens)
+        }
+        return (maxTokens, nil)
+    }
+
+    private func requiresMaxCompletionTokens(modelName: String) -> Bool {
+        let lower = modelName.lowercased()
+        return lower.hasPrefix("gpt-5") || lower.hasPrefix("o1") || lower.hasPrefix("o3") || lower.hasPrefix("o4")
     }
 }
 
